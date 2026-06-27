@@ -18,7 +18,7 @@
 > **「非決定論的なカオスを、フロントエンドの境界線（React/Zod）でデジタルシグナル『0 or 1』に強制変換し、100%制御可能な因果律（決定論的世界）の規律に引きずり戻せばいい」**
 
 そう考え、Google Cloud上にリアルタイムな非同期データパイプラインをフルスクラッチしました。  
-リポジトリ名は [**friction-determinism**](https://github.com/[YOUR_GITHUB_ID]/friction-determinism)。
+リポジトリ名は [**friction-determinism**](https://github.com/shu-kob/friction-determinism)。
 
 今回はその検証結果と、このアプローチがビジネスをどう加速させるのか、簡潔にレポートします。
 

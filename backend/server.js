@@ -334,7 +334,7 @@ app.post('/api/mock-llm', (req, res) => {
         "status": "partial_failure",
         "error_code": "JSON_SCHEMA_CORRUPTION",
         "raw_stack": "Unexpected end of input at line 5 column 10",
-        "model": "gemini-3.5-flash-unstable-temp"
+        "model": "gemini-3.5-flash"
       `); // Missing closing bracket!
   } else {
     // Return normal structured JSON

@@ -24,7 +24,9 @@ import {
   AlertTriangle,
   RefreshCw,
   Send,
-  Zap
+  Zap,
+  Smile,
+  Frown
 } from 'lucide-react';
 
 // Register Chart.js elements
@@ -102,6 +104,9 @@ function ChatPage({ sessionId }: { sessionId: string }) {
   const sendMsg = async (textToSend: string, forceBroken = isBrokenMode) => {
     if (!textToSend.trim()) return;
 
+    // Get the last AI response text for semantic context
+    const lastAiMsg = [...messages].reverse().find(m => m.sender === 'ai')?.text || '';
+
     // Add user message
     const userMsgId = crypto.randomUUID();
     const newMessages = [
@@ -121,7 +126,12 @@ function ChatPage({ sessionId }: { sessionId: string }) {
       const response = await fetch('/api/mock-llm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: textToSend, broken: forceBroken })
+        body: JSON.stringify({ 
+          message: textToSend, 
+          broken: forceBroken,
+          lastAiMessage: lastAiMsg,
+          sessionId: sessionId
+        })
       });
 
       const text = await response.text();
@@ -172,6 +182,8 @@ function ChatPage({ sessionId }: { sessionId: string }) {
         is_rage_click: 0,
         is_maigo: 0,
         schema_validation_error: isBrokenJSON ? 1 : 0,
+        is_context_correction: 0, // Let backend merge the async cache
+        is_context_deepening: 0,  // Let backend merge the async cache
         stay_duration_seconds: stayDuration,
         regenerate_count: regenerateCount.current,
         raw_error_message: isBrokenJSON ? `JSON Parse Error: Unexpected end of input at response text: ${text.substring(0, 100)}...` : undefined
@@ -304,6 +316,8 @@ interface MetricRow {
   rage_click_rate: number;
   maigo_rate: number;
   smart_fallback_rate: number;
+  context_correction_rate: number;
+  context_deepening_rate: number;
   avg_stay_duration: number;
   total_regenerate_press: number;
 }
@@ -336,7 +350,7 @@ function AdminPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const triggerSampleTelemetry = (type: 'rage' | 'maigo' | 'fallback') => {
+  const triggerSampleTelemetry = (type: 'rage' | 'maigo' | 'fallback' | 'correction' | 'deepening') => {
     const mockEvent = {
       session_id: crypto.randomUUID(),
       user_id: 'simulated_user',
@@ -346,6 +360,8 @@ function AdminPage() {
       is_rage_click: type === 'rage' ? 1 : 0,
       is_maigo: type === 'maigo' ? 1 : 0,
       schema_validation_error: type === 'fallback' ? 1 : 0,
+      is_context_correction: type === 'correction' ? 1 : 0,
+      is_context_deepening: type === 'deepening' ? 1 : 0,
       stay_duration_seconds: Math.random() * 120,
       regenerate_count: type === 'fallback' ? 2 : 0,
       raw_error_message: type === 'fallback' ? 'ZodError: Expected string, received number' : undefined
@@ -355,14 +371,17 @@ function AdminPage() {
     setTimeout(fetchMetrics, 500);
   };
 
-  // Compute aggregated aggregates
+  // Compute aggregated metrics
   const totalSessions = metrics.reduce((acc, m) => acc + m.total_sessions, 0);
   const totalRageClicks = metrics.reduce((acc, m) => acc + (m.rage_click_rate * m.total_sessions / 100), 0);
   const totalMaigos = metrics.reduce((acc, m) => acc + (m.maigo_rate * m.total_sessions / 100), 0);
   const totalFallbacks = metrics.reduce((acc, m) => acc + (m.smart_fallback_rate * m.total_sessions / 100), 0);
+  const totalCorrections = metrics.reduce((acc, m) => acc + (m.context_correction_rate * m.total_sessions / 100), 0);
+  const totalDeepenings = metrics.reduce((acc, m) => acc + (m.context_deepening_rate * m.total_sessions / 100), 0);
 
+  // UX-driven SLI calculation (Rage click OR Maigo OR Fallback OR Semantic context correction)
   const avgFrictionRate = totalSessions > 0
-    ? ((totalRageClicks + totalMaigos + totalFallbacks) * 100 / totalSessions)
+    ? ((totalRageClicks + totalMaigos + totalFallbacks + totalCorrections) * 100 / totalSessions)
     : 0;
 
   const trueSatisfaction = Math.max(0, 100 - avgFrictionRate);
@@ -375,19 +394,29 @@ function AdminPage() {
     labels: metrics.map(m => m.revision_id),
     datasets: [
       {
-        label: 'Rage Click Rate (%)',
+        label: 'Rage Click (%)',
         data: metrics.map(m => m.rage_click_rate),
         backgroundColor: 'rgba(239, 68, 68, 0.75)', // Red
       },
       {
-        label: 'Maigo Route Rate (%)',
+        label: 'Maigo Bouncing (%)',
         data: metrics.map(m => m.maigo_rate),
         backgroundColor: 'rgba(245, 158, 11, 0.75)', // Orange
       },
       {
-        label: 'Validation Fallback Rate (%)',
+        label: 'Format Crash (%)',
         data: metrics.map(m => m.smart_fallback_rate),
         backgroundColor: 'rgba(168, 85, 247, 0.75)', // Purple
+      },
+      {
+        label: 'Context correction (%)',
+        data: metrics.map(m => m.context_correction_rate),
+        backgroundColor: 'rgba(236, 72, 153, 0.75)', // Pink
+      },
+      {
+        label: 'Context Deepening (%)',
+        data: metrics.map(m => m.context_deepening_rate),
+        backgroundColor: 'rgba(16, 185, 129, 0.75)', // Emerald
       }
     ]
   };
@@ -437,18 +466,24 @@ function AdminPage() {
           </div>
         </div>
 
+        {/* Semantic Quality Indicator Card */}
         <div className="glass-panel metric-card cyan">
-          <div className="metric-label">Total Observed Sessions</div>
-          <div className="metric-value">{totalSessions}</div>
-          <div className="metric-trend text-secondary">Across all active revisions</div>
+          <div className="metric-label">Semantic Alignment</div>
+          <div className="metric-value">
+            {totalSessions > 0 ? (100 - (totalCorrections * 100 / totalSessions)).toFixed(1) : '100'}%
+          </div>
+          <div className="metric-trend text-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Smile size={14} className="text-green" /> 
+            <span>Deepening: {totalSessions > 0 ? (totalDeepenings * 100 / totalSessions).toFixed(1) : '0'}%</span>
+          </div>
         </div>
       </div>
 
       {/* Chart Section */}
       <div className="dashboard-details-row">
         <div className="glass-panel" style={{ padding: '24px' }}>
-          <h2 style={{ fontSize: '18px', marginBottom: '20px' }}>Friction Signals by Application Version</h2>
-          <div style={{ height: '300px', position: 'relative' }}>
+          <h2 style={{ fontSize: '18px', marginBottom: '20px' }}>UX & Semantic Signals by Revision</h2>
+          <div style={{ height: '320px', position: 'relative' }}>
             {metrics.length > 0 ? (
               <Bar 
                 data={chartData} 
@@ -463,7 +498,7 @@ function AdminPage() {
                     y: {
                       grid: { color: 'rgba(255, 255, 255, 0.05)' },
                       ticks: { color: 'rgba(255, 255, 255, 0.6)' },
-                      title: { display: true, text: 'Friction Rate (%)', color: 'rgba(255,255,255,0.6)' }
+                      title: { display: true, text: 'Signal Occurrence Rate (%)', color: 'rgba(255,255,255,0.6)' }
                     }
                   },
                   plugins: {
@@ -486,21 +521,29 @@ function AdminPage() {
           <div>
             <h2 style={{ fontSize: '18px', marginBottom: '8px' }}>Friction Generator</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.4 }}>
-              Instantly push mock friction events to simulate different user actions under the <code>v2-experimental</code> revision.
+              Instantly push mock telemetry events to simulate different physical and semantic user stresses under the <code>v2-experimental</code> revision.
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '20px' }}>
-              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('rage')} style={{ borderLeft: '4px solid var(--accent-red)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
+              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('rage')} style={{ borderLeft: '4px solid var(--accent-red)', padding: '8px 12px' }}>
                 💥 Simulate Rage Click
               </button>
-              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('maigo')} style={{ borderLeft: '4px solid var(--accent-yellow)' }}>
+              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('maigo')} style={{ borderLeft: '4px solid var(--accent-yellow)', padding: '8px 12px' }}>
                 🧭 Simulate Router Bouncing
               </button>
-              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('fallback')} style={{ borderLeft: '4px solid var(--accent-purple)' }}>
+              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('fallback')} style={{ borderLeft: '4px solid var(--accent-purple)', padding: '8px 12px' }}>
                 ⚡ Simulate Schema Crash
+              </button>
+              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('correction')} style={{ borderLeft: '4px solid #ec4899', padding: '8px 12px' }}>
+                <Frown size={14} style={{ marginRight: '6px', verticalAlign: 'middle', color: '#ec4899' }} />
+                Simulate Semantic Correction
+              </button>
+              <button className="btn btn-secondary" onClick={() => triggerSampleTelemetry('deepening')} style={{ borderLeft: '4px solid #10b981', padding: '8px 12px' }}>
+                <Smile size={14} style={{ marginRight: '6px', verticalAlign: 'middle', color: '#10b981' }} />
+                Simulate Semantic Deepening
               </button>
             </div>
           </div>
-          <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '20px', paddingTop: '16px' }}>
+          <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '16px', paddingTop: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
               <Zap size={12} className="text-cyan" />
               <span>Real-time polling runs every 5s.</span>
@@ -520,6 +563,8 @@ function AdminPage() {
               <th>Rage Clicks (%)</th>
               <th>Maigo Rate (%)</th>
               <th>Validation Error (%)</th>
+              <th>Semantic Correction (%)</th>
+              <th>Semantic Deepening (%)</th>
               <th>Avg Stay (s)</th>
               <th>Total Regenerate Press</th>
             </tr>
@@ -532,6 +577,8 @@ function AdminPage() {
                 <td style={{ color: row.rage_click_rate > 5 ? 'var(--accent-red)' : 'var(--text-primary)' }}>{row.rage_click_rate}%</td>
                 <td style={{ color: row.maigo_rate > 5 ? 'var(--accent-yellow)' : 'var(--text-primary)' }}>{row.maigo_rate}%</td>
                 <td style={{ color: row.smart_fallback_rate > 5 ? 'var(--accent-purple)' : 'var(--text-primary)' }}>{row.smart_fallback_rate}%</td>
+                <td style={{ color: row.context_correction_rate > 10 ? '#ec4899' : 'var(--text-primary)' }}>{row.context_correction_rate}%</td>
+                <td style={{ color: 'var(--accent-green)' }}>{row.context_deepening_rate}%</td>
                 <td>{row.avg_stay_duration}s</td>
                 <td>{row.total_regenerate_press}</td>
               </tr>

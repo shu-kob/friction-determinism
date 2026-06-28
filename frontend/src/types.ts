@@ -12,6 +12,10 @@ export const UXEventSchema = z.object({
   is_maigo: z.number().int().min(0).max(1),
   schema_validation_error: z.number().int().min(0).max(1),
   
+  // Semantic context signals (0 or 1, optional to maintain backwards compatibility)
+  is_context_correction: z.number().int().min(0).max(1).optional(),
+  is_context_deepening: z.number().int().min(0).max(1).optional(),
+  
   // Quantitative metrics
   stay_duration_seconds: z.number().min(0),
   regenerate_count: z.number().int().nonnegative(),

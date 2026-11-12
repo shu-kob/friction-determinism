@@ -322,11 +322,23 @@ interface MetricRow {
   total_regenerate_press: number;
 }
 
+interface ProgressiveState {
+  currentPhase: 'none' | 'canary' | 'ab-test' | 'blue-green';
+  traffic: { v1: number; v2: number };
+  v2RevisionName: string;
+  v1RevisionName: string;
+  phaseStartTime: number | null;
+  canaryDurationMs: number;
+  history: Array<{ timestamp: string; event: string; message: string }>;
+}
+
 function AdminPage() {
   const [metrics, setMetrics] = useState<MetricRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState('local');
+  const [progState, setProgState] = useState<ProgressiveState | null>(null);
+  const [canarySecondsLeft, setCanarySecondsLeft] = useState<number | null>(null);
 
   const fetchMetrics = async () => {
     setLoading(true);
@@ -343,12 +355,77 @@ function AdminPage() {
     }
   };
 
+  const fetchProgressiveStatus = async () => {
+    try {
+      const response = await fetch('/api/admin/progressive-status');
+      const data = await response.json();
+      setProgState(data);
+      
+      // Calculate remaining time for Canary phase
+      if (data.currentPhase === 'canary' && data.phaseStartTime) {
+        const elapsed = Date.now() - data.phaseStartTime;
+        const total = data.canaryDurationMs;
+        const remaining = Math.max(0, Math.ceil((total - elapsed) / 1000));
+        setCanarySecondsLeft(remaining);
+      } else {
+        setCanarySecondsLeft(null);
+      }
+    } catch (err) {
+      console.error('Failed to fetch progressive status:', err);
+    }
+  };
+
   useEffect(() => {
     fetchMetrics();
-    // Poll every 5 seconds for real-time aggregation feedback
-    const interval = setInterval(fetchMetrics, 5000);
-    return () => clearInterval(interval);
+    fetchProgressiveStatus();
+    
+    // Poll metrics every 5 seconds, progressive status every 2 seconds
+    const metricsInterval = setInterval(fetchMetrics, 5000);
+    const progressiveInterval = setInterval(fetchProgressiveStatus, 2000);
+    
+    return () => {
+      clearInterval(metricsInterval);
+      clearInterval(progressiveInterval);
+    };
   }, []);
+
+  // Canary countdown timer effect
+  useEffect(() => {
+    if (progState?.currentPhase !== 'canary' || !progState.phaseStartTime) return;
+    
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - (progState.phaseStartTime || 0);
+      const total = progState.canaryDurationMs;
+      const remaining = Math.max(0, Math.ceil((total - elapsed) / 1000));
+      setCanarySecondsLeft(remaining);
+      
+      if (remaining === 0) {
+        fetchProgressiveStatus();
+        fetchMetrics();
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [progState]);
+
+  const triggerProgressiveAction = async (action: 'deploy' | 'promote' | 'rollback' | 'simulate-alert' | 'reset', reason?: string) => {
+    try {
+      const response = await fetch('/api/admin/trigger-progressive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, reason })
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        fetchProgressiveStatus();
+        fetchMetrics();
+      } else {
+        alert('Action failed: ' + data.message);
+      }
+    } catch (err: any) {
+      alert('Error triggering action: ' + err.message);
+    }
+  };
 
   const triggerSampleTelemetry = (type: 'rage' | 'maigo' | 'fallback' | 'correction' | 'deepening') => {
     const mockEvent = {
@@ -367,8 +444,12 @@ function AdminPage() {
       raw_error_message: type === 'fallback' ? 'ZodError: Expected string, received number' : undefined
     };
     sendTelemetry(mockEvent);
-    // Fetch metrics immediately after triggering
-    setTimeout(fetchMetrics, 500);
+    
+    // Fetch metrics after a brief timeout
+    setTimeout(() => {
+      fetchMetrics();
+      fetchProgressiveStatus();
+    }, 500);
   };
 
   // Compute aggregated metrics
@@ -379,50 +460,49 @@ function AdminPage() {
   const totalCorrections = metrics.reduce((acc, m) => acc + (m.context_correction_rate * m.total_sessions / 100), 0);
   const totalDeepenings = metrics.reduce((acc, m) => acc + (m.context_deepening_rate * m.total_sessions / 100), 0);
 
-  // UX-driven SLI calculation (Rage click OR Maigo OR Fallback OR Semantic context correction)
+  // UX-driven SLI calculation
   const avgFrictionRate = totalSessions > 0
     ? ((totalRageClicks + totalMaigos + totalFallbacks + totalCorrections) * 100 / totalSessions)
     : 0;
 
   const trueSatisfaction = Math.max(0, 100 - avgFrictionRate);
-
-  // Status mapping
   const satisfactionStatus = trueSatisfaction >= 90 ? 'green' : trueSatisfaction >= 80 ? 'yellow' : 'red';
 
-  // Chart configurations
+  // Chart configuration
   const chartData = {
     labels: metrics.map(m => m.revision_id),
     datasets: [
       {
         label: 'Rage Click (%)',
         data: metrics.map(m => m.rage_click_rate),
-        backgroundColor: 'rgba(239, 68, 68, 0.75)', // Red
+        backgroundColor: 'rgba(239, 68, 68, 0.75)',
       },
       {
         label: 'Maigo Bouncing (%)',
         data: metrics.map(m => m.maigo_rate),
-        backgroundColor: 'rgba(245, 158, 11, 0.75)', // Orange
+        backgroundColor: 'rgba(245, 158, 11, 0.75)',
       },
       {
         label: 'Format Crash (%)',
         data: metrics.map(m => m.smart_fallback_rate),
-        backgroundColor: 'rgba(168, 85, 247, 0.75)', // Purple
+        backgroundColor: 'rgba(168, 85, 247, 0.75)',
       },
       {
         label: 'Context correction (%)',
         data: metrics.map(m => m.context_correction_rate),
-        backgroundColor: 'rgba(236, 72, 153, 0.75)', // Pink
+        backgroundColor: 'rgba(236, 72, 153, 0.75)',
       },
       {
         label: 'Context Deepening (%)',
         data: metrics.map(m => m.context_deepening_rate),
-        backgroundColor: 'rgba(16, 185, 129, 0.75)', // Emerald
+        backgroundColor: 'rgba(16, 185, 129, 0.75)',
       }
     ]
   };
 
   return (
     <div className="container" style={{ marginTop: '24px', paddingBottom: '40px' }}>
+      {/* Header Panel */}
       <div className="glass-panel" style={{ padding: '24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '28px', letterSpacing: '-0.5px' }} className="gradient-text-cyan">UXOps Cockpit</h1>
@@ -434,7 +514,7 @@ function AdminPage() {
         <div style={{ display: 'flex', gap: '10px' }}>
           <button className="btn btn-secondary" onClick={fetchMetrics}>
             <RefreshCw size={14} className={loading ? 'pulse' : ''} />
-            Refresh
+            Refresh Metrics
           </button>
         </div>
       </div>
@@ -466,7 +546,6 @@ function AdminPage() {
           </div>
         </div>
 
-        {/* Semantic Quality Indicator Card */}
         <div className="glass-panel metric-card cyan">
           <div className="metric-label">Semantic Alignment</div>
           <div className="metric-value">
@@ -479,7 +558,140 @@ function AdminPage() {
         </div>
       </div>
 
-      {/* Chart Section */}
+      {/* PROGRESSIVE DELIVERY PANEL */}
+      {progState && (
+        <div className="glass-panel sensor-alert-pop" style={{ padding: '24px', marginBottom: '24px', borderLeft: '4px solid var(--accent-cyan)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Zap className="text-cyan pulse" size={20} />
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>Progressive Delivery Defense Matrix (トラフィック全自動制御)</h2>
+            </div>
+            <div>
+              <span className={`nav-link active`} style={{ 
+                background: progState.currentPhase === 'none' ? 'rgba(255,255,255,0.05)' : progState.currentPhase === 'canary' ? 'var(--accent-yellow-glow)' : progState.currentPhase === 'ab-test' ? 'rgba(59,130,246,0.15)' : 'var(--accent-green-glow)',
+                borderColor: progState.currentPhase === 'none' ? 'rgba(255,255,255,0.1)' : progState.currentPhase === 'canary' ? 'rgba(245,158,11,0.4)' : progState.currentPhase === 'ab-test' ? 'rgba(59,130,246,0.4)' : 'rgba(16,185,129,0.4)',
+                color: progState.currentPhase === 'none' ? 'var(--text-secondary)' : progState.currentPhase === 'canary' ? 'var(--accent-yellow)' : progState.currentPhase === 'ab-test' ? '#3b82f6' : 'var(--accent-green)',
+                fontWeight: 'bold', textTransform: 'uppercase', fontSize: '12px', padding: '4px 12px'
+              }}>
+                Current Phase: {progState.currentPhase === 'none' ? 'STABLE (100% v1)' : progState.currentPhase}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
+            <div>
+              {/* Traffic Split Visual Bar */}
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 'bold', marginBottom: '6px' }}>
+                  <span className="text-cyan">v1 [Stable]: {progState.traffic.v1}%</span>
+                  <span className="text-purple">v2-experimental [New]: {progState.traffic.v2}%</span>
+                </div>
+                <div style={{ height: '14px', background: 'rgba(0,0,0,0.4)', borderRadius: '7px', display: 'flex', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                  <div style={{ width: `${progState.traffic.v1}%`, background: 'linear-gradient(90deg, #06b6d4, #3b82f6)', transition: 'width 0.8s ease' }}></div>
+                  <div style={{ width: `${progState.traffic.v2}%`, background: 'linear-gradient(90deg, #ec4899, #a855f7)', transition: 'width 0.8s ease' }}></div>
+                </div>
+              </div>
+
+              {/* Phase flow indicators */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '10px', marginBottom: '20px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                <div style={{ textAlign: 'center', flex: 1, opacity: progState.currentPhase === 'none' ? 1 : 0.4 }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Phase 0</div>
+                  <div style={{ fontWeight: 'bold', color: 'var(--text-primary)', fontSize: '13px' }}>v1 Active (100%)</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>➔</div>
+                <div style={{ textAlign: 'center', flex: 1, opacity: progState.currentPhase === 'canary' ? 1 : 0.4 }}>
+                  <div style={{ fontSize: '11px', color: 'var(--accent-yellow)' }}>Phase 1 {canarySecondsLeft !== null && `(${canarySecondsLeft}s)`}</div>
+                  <div style={{ fontWeight: 'bold', color: progState.currentPhase === 'canary' ? 'var(--accent-yellow)' : 'var(--text-primary)', fontSize: '13px' }}>Canary (5%)</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>➔</div>
+                <div style={{ textAlign: 'center', flex: 1, opacity: progState.currentPhase === 'ab-test' ? 1 : 0.4 }}>
+                  <div style={{ fontSize: '11px', color: '#3b82f6' }}>Phase 2</div>
+                  <div style={{ fontWeight: 'bold', color: progState.currentPhase === 'ab-test' ? '#3b82f6' : 'var(--text-primary)', fontSize: '13px' }}>A/B Test (50:50)</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>➔</div>
+                <div style={{ textAlign: 'center', flex: 1, opacity: progState.currentPhase === 'blue-green' ? 1 : 0.4 }}>
+                  <div style={{ fontSize: '11px', color: 'var(--accent-green)' }}>Phase 3</div>
+                  <div style={{ fontWeight: 'bold', color: progState.currentPhase === 'blue-green' ? 'var(--accent-green)' : 'var(--text-primary)', fontSize: '13px' }}>Blue/Green (100%)</div>
+                </div>
+              </div>
+
+              {/* Core Control Buttons */}
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {progState.currentPhase === 'none' && (
+                  <button className="btn btn-primary" onClick={() => triggerProgressiveAction('deploy')} style={{ background: 'linear-gradient(135deg, #06b6d4, #3b82f6)', color: '#000', fontWeight: 'bold' }}>
+                    🚀 Deploy v2-experimental to Canary (5%)
+                  </button>
+                )}
+                {progState.currentPhase === 'canary' && (
+                  <>
+                    <button className="btn btn-primary" onClick={() => triggerProgressiveAction('promote')} style={{ background: 'var(--accent-yellow)', color: '#000' }}>
+                      ⏩ Force Promote to A/B Test (50:50)
+                    </button>
+                    <button className="btn btn-danger" onClick={() => triggerProgressiveAction('rollback', 'Manual emergency rollback from Canary')}>
+                      🚨 Emergency Rollback (0% Traffic)
+                    </button>
+                  </>
+                )}
+                {progState.currentPhase === 'ab-test' && (
+                  <>
+                    <button className="btn btn-primary" onClick={() => triggerProgressiveAction('promote')} style={{ background: '#3b82f6', color: '#fff' }}>
+                      🏆 Promote to Blue/Green (100% v2)
+                    </button>
+                    <button className="btn btn-danger" onClick={() => triggerProgressiveAction('rollback', 'Manual emergency rollback from A/B Test')}>
+                      🚨 Emergency Rollback (v1: 100%)
+                    </button>
+                  </>
+                )}
+                {progState.currentPhase === 'blue-green' && (
+                  <>
+                    <button className="btn btn-danger" onClick={() => triggerProgressiveAction('rollback', 'Manual emergency rollback from Blue/Green 100%')} style={{ width: '100%' }}>
+                      🚨 Emergency Rollback to v1 (Active Standby)
+                    </button>
+                  </>
+                )}
+                {progState.currentPhase !== 'none' && (
+                  <button className="btn btn-secondary" onClick={() => triggerProgressiveAction('reset')}>
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* SRE Progressive History Log Console */}
+            <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '20px', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 'bold', textTransform: 'uppercase', marginBottom: '8px' }}>
+                SRE Automated Control Log
+              </div>
+              <div style={{ 
+                flex: 1, 
+                background: 'rgba(0,0,0,0.3)', 
+                borderRadius: '8px', 
+                border: '1px solid rgba(255,255,255,0.03)', 
+                padding: '10px', 
+                fontSize: '11px', 
+                fontFamily: 'var(--font-mono)', 
+                overflowY: 'auto',
+                maxHeight: '160px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                {progState.history.map((log, idx) => (
+                  <div key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', paddingBottom: '4px' }}>
+                    <div style={{ color: 'var(--text-muted)' }}>{new Date(log.timestamp).toLocaleTimeString()}</div>
+                    <div style={{ fontWeight: 'bold', color: log.event.includes('🚨') ? 'var(--accent-red)' : log.event.includes('🟡') ? 'var(--accent-yellow)' : log.event.includes('🟢') ? 'var(--accent-green)' : 'var(--text-primary)' }}>
+                      {log.event}
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '10px', marginTop: '2px', lineHeight: 1.3 }}>{log.message}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chart Section & Simulator Panel */}
       <div className="dashboard-details-row">
         <div className="glass-panel" style={{ padding: '24px' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px' }}>UX & Semantic Signals by Revision</h2>
@@ -542,11 +754,19 @@ function AdminPage() {
                 Simulate Semantic Deepening
               </button>
             </div>
+            
+            {progState && progState.currentPhase === 'blue-green' && (
+              <div style={{ marginTop: '12px' }}>
+                <button className="btn btn-danger" onClick={() => triggerProgressiveAction('simulate-alert')} style={{ width: '100%', padding: '8px 12px', fontSize: '13px' }}>
+                  🚨 Simulate High Burn Rate Alert
+                </button>
+              </div>
+            )}
           </div>
           <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '16px', paddingTop: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
               <Zap size={12} className="text-cyan" />
-              <span>Real-time polling runs every 5s.</span>
+              <span>Real-time polling runs every 2s.</span>
             </div>
           </div>
         </div>

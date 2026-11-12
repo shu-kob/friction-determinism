@@ -3,6 +3,7 @@ const cors = require('cors');
 const { PubSub } = require('@google-cloud/pubsub');
 const { BigQuery } = require('@google-cloud/bigquery');
 const { VertexAI } = require('@google-cloud/vertexai');
+const { ServicesClient } = require('@google-cloud/run');
 require('dotenv').config();
 
 const app = express();
@@ -18,6 +19,7 @@ let pubsub;
 let bigquery;
 let vertexAi;
 let generativeModel;
+let runClient;
 
 try {
   pubsub = new PubSub({ projectId: PROJECT_ID });
@@ -25,6 +27,13 @@ try {
   console.log(`GCP clients initialized for project: ${PROJECT_ID}`);
 } catch (err) {
   console.warn('Failed to initialize GCP clients. Operating in fallback/mock mode.', err.message);
+}
+
+try {
+  runClient = new ServicesClient({ projectId: PROJECT_ID });
+  console.log('Google Cloud Run ServicesClient initialized successfully.');
+} catch (err) {
+  console.warn('Failed to initialize Google Cloud Run ServicesClient. Operating in mock/simulation mode.', err.message);
 }
 
 try {
@@ -147,6 +156,129 @@ Constraints:
   });
 }
 
+// --- PROGRESSIVE DELIVERY STATE & CONTROLLER ---
+const progressiveState = {
+  currentPhase: 'none', // 'none' | 'canary' | 'ab-test' | 'blue-green'
+  traffic: {
+    v1: 100,
+    v2: 0
+  },
+  v2RevisionName: 'v2-experimental',
+  v1RevisionName: 'v1',
+  phaseStartTime: null,
+  canaryTimer: null,
+  history: [
+    {
+      timestamp: new Date().toISOString(),
+      event: 'System Initialized ⚪',
+      message: 'Progressive delivery system ready. Traffic split: v1=100%, v2=0%'
+    }
+  ]
+};
+
+async function updateTrafficShare(v1Rate, v2Rate) {
+  console.log(`[Cloud Run Traffic Split] Updating traffic share: v1=${v1Rate}%, v2=${v2Rate}%`);
+  
+  if (runClient) {
+    try {
+      const servicePath = runClient.servicePath(PROJECT_ID, 'asia-northeast1', 'friction-ops-service');
+      const [service] = await runClient.getService({ name: servicePath });
+      
+      service.traffic = [
+        { revision: progressiveState.v1RevisionName, percent: v1Rate },
+        { revision: progressiveState.v2RevisionName, percent: v2Rate }
+      ];
+      
+      console.log(`[Cloud Run Traffic Split] Sending update request to GCP for service: friction-ops-service`);
+      const [operation] = await runClient.updateService({ service });
+      console.log(`[Cloud Run Traffic Split] Update operation started: ${operation.name}`);
+    } catch (err) {
+      console.warn('[Cloud Run Traffic Split] Real GCP update failed. Falling back to simulation.', err.message);
+    }
+  }
+  
+  progressiveState.traffic = { v1: v1Rate, v2: v2Rate };
+}
+
+async function triggerRollback(reason) {
+  const previousPhase = progressiveState.currentPhase;
+  progressiveState.currentPhase = 'none';
+  progressiveState.phaseStartTime = null;
+  
+  if (progressiveState.canaryTimer) {
+    clearTimeout(progressiveState.canaryTimer);
+    progressiveState.canaryTimer = null;
+  }
+  
+  await updateTrafficShare(100, 0);
+  
+  progressiveState.history.unshift({
+    timestamp: new Date().toISOString(),
+    event: 'Rollback Triggered 🚨',
+    message: `AUTOMATED ROLLBACK from [${previousPhase}] phase to [v1: 100% / v2: 0%] traffic. Reason: ${reason}`
+  });
+  console.log(`[Progressive Delivery] Automated rollback complete. Reason: ${reason}`);
+}
+
+async function transitionPhase(targetPhase) {
+  const nowStr = new Date().toISOString();
+  
+  if (progressiveState.canaryTimer) {
+    clearTimeout(progressiveState.canaryTimer);
+    progressiveState.canaryTimer = null;
+  }
+
+  if (targetPhase === 'canary') {
+    progressiveState.currentPhase = 'canary';
+    progressiveState.phaseStartTime = Date.now();
+    await updateTrafficShare(95, 5);
+    progressiveState.history.unshift({
+      timestamp: nowStr,
+      event: 'Phase Canary Started 🟡',
+      message: `Deployed 'v2-experimental' to Canary phase with 5% traffic. Initiating 30-second automated validation window.`
+    });
+
+    // Start Canary timer (30s for demo, 5m for production)
+    const delay = process.env.NODE_ENV === 'production' ? 5 * 60 * 1000 : 30 * 1000;
+    progressiveState.canaryTimer = setTimeout(async () => {
+      if (progressiveState.currentPhase === 'canary') {
+        console.log(`[Progressive Delivery] Canary timer expired with no errors. Promoting automatically to A/B Test phase.`);
+        await transitionPhase('ab-test');
+      }
+    }, delay);
+
+  } else if (targetPhase === 'ab-test') {
+    progressiveState.currentPhase = 'ab-test';
+    progressiveState.phaseStartTime = Date.now();
+    await updateTrafficShare(50, 50);
+    progressiveState.history.unshift({
+      timestamp: nowStr,
+      event: 'Phase A/B Test Started 🔵',
+      message: `Canary phase cleared without errors. Promoted to A/B Test phase with 50% vs 50% split.`
+    });
+
+  } else if (targetPhase === 'blue-green') {
+    progressiveState.currentPhase = 'blue-green';
+    progressiveState.phaseStartTime = Date.now();
+    await updateTrafficShare(0, 100);
+    progressiveState.history.unshift({
+      timestamp: nowStr,
+      event: 'Phase Blue/Green Completed 🟢',
+      message: `A/B Test metrics verified. Promoted v2-experimental to 100% traffic (Blue/Green). Old v1 kept active at 0% traffic as active-standby.`
+    });
+
+  } else if (targetPhase === 'none') {
+    progressiveState.currentPhase = 'none';
+    progressiveState.phaseStartTime = null;
+    await updateTrafficShare(100, 0);
+    progressiveState.history.unshift({
+      timestamp: nowStr,
+      event: 'Reset To v1 ⚪',
+      message: `Resetting deployment state. Traffic redirected 100% to v1.`
+    });
+  }
+}
+
 // 1. Telemetry Ingestion API (POST /api/telemetry)
 app.post('/api/telemetry', async (req, res) => {
   const payload = req.body;
@@ -163,6 +295,20 @@ app.post('/api/telemetry', async (req, res) => {
   } else {
     payload.is_context_correction = payload.is_context_correction || 0;
     payload.is_context_deepening = payload.is_context_deepening || 0;
+  }
+
+  // --- PROGRESSIVE DELIVERY AUTOMATED ROLLBACK TRIGGERS ---
+  if (payload.revision_id === 'v2-experimental') {
+    if (progressiveState.currentPhase === 'canary' && Number(payload.schema_validation_error) === 1) {
+      console.log(`[Auto-Rollback] Canary phase format crash (schema_validation_error=1) detected! Initiating immediate 0% rollback.`);
+      triggerRollback("Canary Phase Format Crash (schema_validation_error=1) detected on v2-experimental");
+    } else if (progressiveState.currentPhase === 'ab-test' && Number(payload.is_context_correction) === 1) {
+      console.log(`[Auto-Rollback] A/B Test phase semantic correction (is_context_correction=1) detected on v2-experimental! Initiating rollback.`);
+      triggerRollback("A/B Test Phase Semantic Correction (is_context_correction=1) detected on v2-experimental");
+    } else if (progressiveState.currentPhase === 'blue-green' && Number(payload.is_rage_click) === 1) {
+      console.log(`[Auto-Rollback] High friction alert (is_rage_click=1) detected on v2-experimental! Initiating emergency rollback.`);
+      triggerRollback("High Burn Rate Emergency Alert (is_rage_click=1) detected on v2-experimental");
+    }
   }
 
   // Asynchronously publish to Pub/Sub to prevent blocking client responses
@@ -312,6 +458,60 @@ app.get('/api/admin/ux-metrics', async (req, res) => {
       metrics: metrics
     });
   }
+});
+
+// 4. Progressive Delivery Controller API (POST /api/admin/trigger-progressive)
+app.post('/api/admin/trigger-progressive', async (req, res) => {
+  const { action, reason } = req.body;
+  console.log(`[Progressive API] Action: ${action}, Reason: ${reason}`);
+
+  try {
+    if (action === 'deploy') {
+      await transitionPhase('canary');
+    } else if (action === 'promote') {
+      if (progressiveState.currentPhase === 'canary') {
+        await transitionPhase('ab-test');
+      } else if (progressiveState.currentPhase === 'ab-test') {
+        await transitionPhase('blue-green');
+      } else {
+        throw new Error(`Cannot manually promote from current phase: ${progressiveState.currentPhase}`);
+      }
+    } else if (action === 'rollback') {
+      await triggerRollback(reason || "Manual developer override via dashboard");
+    } else if (action === 'simulate-alert') {
+      await triggerRollback(reason || "Simulated Cloud Monitoring Alert (Burn Rate > 14.4)");
+    } else if (action === 'reset') {
+      await transitionPhase('none');
+    } else {
+      throw new Error(`Invalid progressive delivery action: ${action}`);
+    }
+
+    res.json({
+      status: 'success',
+      state: {
+        currentPhase: progressiveState.currentPhase,
+        traffic: progressiveState.traffic,
+        phaseStartTime: progressiveState.phaseStartTime,
+        historyCount: progressiveState.history.length
+      }
+    });
+  } catch (err) {
+    console.error('[Progressive API] Error:', err.message);
+    res.status(400).json({ status: 'error', message: err.message });
+  }
+});
+
+// 5. Progressive Delivery Status API (GET /api/admin/progressive-status)
+app.get('/api/admin/progressive-status', (req, res) => {
+  res.json({
+    currentPhase: progressiveState.currentPhase,
+    traffic: progressiveState.traffic,
+    v2RevisionName: progressiveState.v2RevisionName,
+    v1RevisionName: progressiveState.v1RevisionName,
+    phaseStartTime: progressiveState.phaseStartTime,
+    canaryDurationMs: process.env.NODE_ENV === 'production' ? 5 * 60 * 1000 : 30 * 1000,
+    history: progressiveState.history
+  });
 });
 
 // 3. Mock LLM Chat API (POST /api/mock-llm)

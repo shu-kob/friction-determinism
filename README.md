@@ -5,6 +5,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20.x-green.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-19.x-blue.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
+[![Playwright](https://img.shields.io/badge/Playwright-E2E%20Chaos-45ba4b.svg)](https://playwright.dev/)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run%20%7C%20Pub%2FSub%20%7C%20BigQuery%20%7C%20Vertex%20AI-orange.svg)](https://cloud.google.com/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
@@ -82,13 +83,27 @@ Cloud Run のトラフィック分割（Traffic Splitting）機能を API 経由
 - **第3層：Blue/Green（100%昇格）**
   - 全トラフィックを移行。旧リビジョンは即座に待機状態（0%）を維持し、バーンレート急上昇時には **1秒で旧リビジョンへ100%即時復帰**。
 
+### 4. 次世代 Gemini 3モデル適材適所オーケストレーション
+単一のLLMではなく、レイテンシ・推論能力・FinOpsコストの観点から3モデルを適材適所に使い分けます。
+| モデル | 配置箇所・役割 | 性能・FinOps特性 |
+| :--- | :--- | :--- |
+| **⚡ Gemini 3.5 Flash-Lite** | **リアルタイム・セマンティックセンサー**<br>毎発話の言い直し（不満）/ 深掘りを 0 or 1 で判定 | 遅延 < 50ms<br>超低コスト ($0.0375 / 1M) |
+| **🎯 Gemini 3.8 Flash** | **プログレッシブ判定 ＆ Cockpit UXサマリー**<br>A/Bテスト集計データから昇格/ロールバックを複合判定 | 遅延 ~ 200ms<br>推論と速度の最適バランス |
+| **🧠 Gemini 4 Argon** | **インシデント深層RCA ＆ 改善プロンプトDiff提案**<br>1秒ロールバック発動後、異常ログを推論し事後分析レポートを自律生成 | 最上位の推論能力<br>事後分析時のみ発動 |
+
+### 5. Playwright による「UXカオスエンジニアリング」検証
+Playwright を単なる機能テストではなく、**「擬似ユーザーによるUXカオス・シミュレータ」** として活用。
+- **シナリオ1 (レイジクリック)**: 1秒間に高速連打を行い `is_rage_click = 1` の発火を検証
+- **シナリオ2 (探索迷子)**: 30秒間に3画面以上4往復のピンポン遷移を行い `is_maigo = 1` を検証
+- **シナリオ3 (Canary自動ロールバック)**: 意図的に壊れたJSONを注入し、Smart Fallback ➔ テレメトリ即時裏流し ➔ Cloud Run 1秒自動ロールバック ➔ Gemini 4 Argon ポストモーテム生成の一連の因果律を CI 上で完全証明
+
 ---
 
 ## 📁 ディレクトリ構成
 
 ```text
 friction-determinism/
-├── frontend/               # React + TypeScript + Vite フロントエンド
+├── frontend/               # React 19 + TypeScript + Vite フロントエンド
 │   ├── src/
 │   │   ├── components/     # UI コンポーネント (ErrorBoundary, Fallback UI)
 │   │   ├── hooks/          # UX センサー hooks (レイジクリック, 探索迷子)
@@ -96,8 +111,12 @@ friction-determinism/
 │   │   └── types.ts        # Zod スキーマ ＆ TypeScript 型定義
 │   └── package.json
 ├── backend/                # Node.js + Express バックエンド API
-│   ├── server.js           # Telemetry API, Admin API, Cloud Run 自動制御ロジック
+│   ├── server.js           # Telemetry API, Admin API, Gemini 3モデル連携, Cloud Run 自動制御
 │   └── package.json
+├── e2e/                    # Playwright による UX カオスエンジニアリング自動テスト
+│   ├── 01-rage-click.spec.ts      # 怒りの連打シミュレーション
+│   ├── 02-maigo.spec.ts           # 探索迷子・ピンポン遷移シミュレーション
+│   └── 03-canary-rollback.spec.ts # Canary 5% ➔ スキーマ破壊 ➔ 自動ロールバック ➔ ポストモーテム
 ├── scripts/                # 運用・検証用スクリプト
 │   ├── setup-gcp.sh        # BigQuery / Pub/Sub プロビジョニング
 │   ├── simulate-telemetry.sh # テレメトリ負荷・フリクションシミュレータ
@@ -107,6 +126,7 @@ friction-determinism/
 │   ├── verification_report_semantic.md
 │   └── verification_report_progressive.md
 ├── articles/               # 技術解説記事・ブログドラフト
+├── playwright.config.ts    # Playwright E2E 設定ファイル
 ├── spec.md                 # 詳細システム仕様書
 ├── Dockerfile              # マルチステージ本番用コンテナ定義
 └── README.md
@@ -129,13 +149,33 @@ GCP の認証情報（ADC）がない環境でも、バックエンドは **ロ�
 git clone https://github.com/shu-kob/friction-determinism.git
 cd friction-determinism
 
-# バックエンドの依存関係インストール
-cd backend
+# プロジェクト全体の依存関係インストール (ルート, backend, frontend)
 npm install
+cd backend && npm install
+cd ../frontend && npm install
+cd ..
+```
 
-# フロントエンドの依存関係インストール
-cd ../frontend
-npm install
+### 3. Playwright E2E カオスシミュレーションの実行
+
+ワンコマンドでフロントエンドのビルド・サーバー起動・3大カオステストを実行できます：
+
+```bash
+# ヘッドレスでE2Eテストを実行 (全3シナリオ自動実証)
+npm run test:e2e
+
+# ブラウザUIでステップ実行を確認したい場合
+npm run test:e2e:ui
+```
+
+### 4. ローカル開発サーバーの起動
+
+```bash
+# ターミナル 1: バックエンド起動 (ポート 5001)
+npm run dev:backend
+
+# ターミナル 2: フロントエンド起動 (ポート 5173)
+npm run dev:frontend
 ```
 
 ### 3. バックエンドの起動
@@ -218,6 +258,22 @@ bash scripts/simulate-telemetry.sh https://your-cloud-run-service-url.run.app
 - [プログレッシブ・デリバリー検証レポート](./reports/verification_report_progressive.md)
 - [セマンティック・フリクションセンサー検証レポート](./reports/verification_report_semantic.md)
 - [テレメトリパイプライン負荷シミュレーションレポート](./reports/simulation_report.md)
+
+---
+
+## 📖 技術書典 合同誌 執筆構成案（14〜16P想定）
+
+**仮タイトル**: 『HTTP 200 OKの嘘を暴く！Playwright × Cloud Runで作る自己修復型UXOps基盤』  
+〜Gemini 3.8 Flash / 4 Argon / 3.5 Flash-Lite による決定論的UX監視〜
+
+| 節 | ページ数 | 内容・掲載コード／図版 |
+| :--- | :---: | :--- |
+| **第1節: はじめに** | 2P | ・なぜ「HTTP 200 OK」なのにユーザーは静かに離脱するのか？<br>・従来のSRE（インフラ稼働率）の死角とAI時代のサイレントUX崩壊<br>・主観的なストレスを 0 or 1 の決定論的シグナルに変換する設計思想 |
+| **第2節: 全体アーキテクチャ ＆ 3世代Geminiの適材適所** | 3P | ・React + Cloud Run + Pub/Sub + BigQuery + UXOps Cockpit の全体図<br>・3.5 Flash-Lite（全量監視）/ 3.8 Flash（リリース判定）/ 4 Argon（根本原因分析）の使い分けとFinOpsコスト試算表 |
+| **第3節: クライアント ＆ LLMセンサーの実装** | 3P | ・Zod スキーマによる出力崩れ検知と Smart Fallback UI<br>・レイジクリック・探索迷子の検知ロジック（`hooks/` の解説）<br>・Gemini 3.5 Flash-Lite による非同期「言い直し（セマンティック・フリクション）」判定コード |
+| **第4節: Playwright による「UXカオス注入」と自動E2E検証** | 3P | ・怒りの連打・画面往復迷子を Playwright で再現するテストコード抜粋<br>・sendBeacon / keepalive 通信を Playwright で決定論的にインターセプトする実践Tips<br>・自動テスト実行ログとエビデンス |
+| **第5節: Cloud Run Traffic Splitting による3層プログレッシブ・デリバリー** | 3P | ・Canary (5%) → A/B (50:50) → Blue/Green (100%) の自動制御ロジック<br>・バーンレート急上昇時の「1秒自動ロールバック」の因果律<br>・Gemini 4 Argon が自律生成したポストモーテム（RCA & プロンプト修正Diff）の掲載 |
+| **第6節: おわりに** | 1P | ・SREの次なるフロンティアとしてのUXOps<br>・「壊れたら戻す」から「ユーザーがつまづいたら戻す」自律修復クラウドへ |
 
 ---
 

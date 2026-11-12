@@ -1,0 +1,18 @@
+{
+  "name": "friction-determinism",
+  "version": "1.0.0",
+  "description": "Friction Determinism - Autonomous Self-Healing UXOps & SRE Platform",
+  "private": true,
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1"
+  }
+}
+

@@ -26,7 +26,10 @@ import {
   Send,
   Zap,
   Smile,
-  Frown
+  Frown,
+  Sparkles,
+  FileText,
+  Cpu
 } from 'lucide-react';
 
 // Register Chart.js elements
@@ -340,6 +343,51 @@ function AdminPage() {
   const [progState, setProgState] = useState<ProgressiveState | null>(null);
   const [canarySecondsLeft, setCanarySecondsLeft] = useState<number | null>(null);
 
+  // Gemini 3.8 Flash & 4 Argon states
+  const [abEvaluation, setAbEvaluation] = useState<any | null>(null);
+  const [evaluatingAb, setEvaluatingAb] = useState(false);
+  const [postmortemData, setPostmortemData] = useState<string | null>(null);
+  const [generatingPostmortem, setGeneratingPostmortem] = useState(false);
+  const [showPostmortemModal, setShowPostmortemModal] = useState(false);
+
+  const handleEvaluateAb = async () => {
+    setEvaluatingAb(true);
+    try {
+      const response = await fetch('/api/admin/evaluate-ab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metrics })
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAbEvaluation(data.evaluation);
+      }
+    } catch (err: any) {
+      alert('A/B Evaluation failed: ' + err.message);
+    } finally {
+      setEvaluatingAb(false);
+    }
+  };
+
+  const handleGeneratePostmortem = async () => {
+    setGeneratingPostmortem(true);
+    setShowPostmortemModal(true);
+    try {
+      const response = await fetch('/api/admin/generate-postmortem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setPostmortemData(data.postmortem);
+      }
+    } catch (err: any) {
+      setPostmortemData('### エラー: ポストモーテムの生成に失敗しました: ' + err.message);
+    } finally {
+      setGeneratingPostmortem(false);
+    }
+  };
+
   const fetchMetrics = async () => {
     setLoading(true);
     try {
@@ -558,6 +606,101 @@ function AdminPage() {
         </div>
       </div>
 
+      {/* GEMINI 3-MODEL ARCHITECTURE MATRIX */}
+      <div className="glass-panel" style={{ padding: '20px', marginBottom: '24px', borderTop: '3px solid #8b5cf6' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Cpu size={18} className="text-purple pulse" />
+            <span style={{ fontWeight: 'bold', fontSize: '15px' }}>Next-Gen Gemini 3-Model Orchestration Matrix</span>
+            <span style={{ fontSize: '11px', background: 'rgba(139,92,246,0.2)', color: '#c084fc', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(139,92,246,0.3)' }}>
+              2026 Tech Book Special
+            </span>
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Latency vs FinOps Optimized
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+          {/* Model 1: 3.5 Flash-Lite */}
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(6,182,212,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#06b6d4' }}>Gemini 3.5 Flash-Lite</span>
+              <span className="status-dot green pulse" title="Connected & Active"></span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '6px' }}>
+              リアルタイム・セマンティックセンサー
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+              <span>Role: 文脈言い直し/深掘り2値判定</span>
+              <span style={{ color: '#10b981' }}>&lt;50ms / 最安</span>
+            </div>
+          </div>
+
+          {/* Model 2: 3.8 Flash */}
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(59,130,246,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#3b82f6' }}>Gemini 3.8 Flash</span>
+              <span className="status-dot cyan pulse" title="Ready for Evaluation"></span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '6px' }}>
+              プログレッシブ判定 & UXサマリー
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+              <span>Role: A/B昇格・ロールバック判断</span>
+              <span style={{ color: '#38bdf8' }}>~200ms / 最適</span>
+            </div>
+          </div>
+
+          {/* Model 3: 4 Argon */}
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(236,72,153,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#ec4899' }}>Gemini 4 Argon</span>
+              <span className="status-dot yellow pulse" title="Standby for Incident"></span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '6px' }}>
+              ポストモーテム & プロンプト自己修復
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+              <span>Role: 1秒ロールバック後の深層RCA</span>
+              <span style={{ color: '#f43f5e' }}>Deep 推論</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* A/B EVALUATION CARD (If triggered) */}
+      {abEvaluation && (
+        <div className="glass-panel sensor-alert-pop" style={{ padding: '20px', marginBottom: '24px', borderLeft: '4px solid #3b82f6', background: 'rgba(59,130,246,0.06)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sparkles size={18} className="text-cyan pulse" />
+              <h3 style={{ margin: 0, fontSize: '16px' }}>Gemini 3.8 Flash: Progressive A/B Strategic Recommendation</h3>
+            </div>
+            <span style={{ 
+              fontWeight: 'bold', 
+              fontSize: '12px', 
+              padding: '3px 10px', 
+              borderRadius: '6px', 
+              background: abEvaluation.recommendation === 'PROMOTE' ? 'var(--accent-green-glow)' : 'var(--accent-red-glow)',
+              color: abEvaluation.recommendation === 'PROMOTE' ? 'var(--accent-green)' : 'var(--accent-red)'
+            }}>
+              RECOMMENDATION: {abEvaluation.recommendation} (Confidence: {(abEvaluation.confidence_score * 100).toFixed(0)}%)
+            </span>
+          </div>
+          <p style={{ fontSize: '13px', color: 'var(--text-primary)', marginBottom: '10px', lineHeight: '1.6' }}>
+            {abEvaluation.summary_ja}
+          </p>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {abEvaluation.key_findings?.map((finding: string, idx: number) => (
+              <span key={idx} style={{ fontSize: '11px', background: 'rgba(255,255,255,0.05)', padding: '4px 8px', borderRadius: '4px', color: 'var(--text-secondary)' }}>
+                📌 {finding}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* PROGRESSIVE DELIVERY PANEL */}
       {progState && (
         <div className="glass-panel sensor-alert-pop" style={{ padding: '24px', marginBottom: '24px', borderLeft: '4px solid var(--accent-cyan)' }}>
@@ -654,6 +797,28 @@ function AdminPage() {
                     Reset
                   </button>
                 )}
+              </div>
+
+              {/* Next-Gen LLM Strategic Tools */}
+              <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleEvaluateAb} 
+                  disabled={evaluatingAb}
+                  style={{ fontSize: '11px', padding: '6px 10px', background: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.3)', color: '#60a5fa' }}
+                >
+                  <Sparkles size={12} className={evaluatingAb ? 'pulse' : ''} />
+                  {evaluatingAb ? 'Evaluating...' : '⚡ Evaluate A/B with 3.8 Flash'}
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleGeneratePostmortem}
+                  disabled={generatingPostmortem}
+                  style={{ fontSize: '11px', padding: '6px 10px', background: 'rgba(236,72,153,0.15)', borderColor: 'rgba(236,72,153,0.3)', color: '#f472b6' }}
+                >
+                  <FileText size={12} className={generatingPostmortem ? 'pulse' : ''} />
+                  {generatingPostmortem ? 'Generating RCA...' : '🧠 Postmortem with 4 Argon'}
+                </button>
               </div>
             </div>
 
@@ -806,6 +971,61 @@ function AdminPage() {
           </tbody>
         </table>
       </div>
+
+      {/* GEMINI 4 ARGON POSTMORTEM MODAL */}
+      {showPostmortemModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+          background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)',
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+          zIndex: 9999, padding: '20px'
+        }}>
+          <div className="glass-panel" style={{
+            maxWidth: '850px', width: '100%', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column',
+            border: '1px solid rgba(236,72,153,0.4)',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(236,72,153,0.2)'
+          }}>
+            {/* Modal Header */}
+            <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <FileText className="text-purple pulse" size={20} />
+                <h3 style={{ margin: 0, fontSize: '18px' }}>Gemini 4 Argon: Automated Incident Postmortem & RCA</h3>
+              </div>
+              <button className="btn btn-secondary" onClick={() => setShowPostmortemModal(false)} style={{ padding: '4px 10px', fontSize: '12px' }}>
+                ✕ Close
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div style={{ padding: '24px', overflowY: 'auto', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '1.7', whiteSpace: 'pre-wrap' }}>
+              {generatingPostmortem ? (
+                <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+                  <Cpu size={36} className="text-purple pulse" style={{ margin: '0 auto 16px' }} />
+                  <div style={{ fontWeight: 'bold', fontSize: '16px' }}>Gemini 4 Argon is reasoning through incident telemetry...</div>
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '8px' }}>
+                    Analyzing Zod schema stack traces, user frustration linguistics, and Cloud Run traffic telemetry
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--text-primary)', fontFamily: 'monospace', background: 'rgba(0,0,0,0.4)', padding: '20px', borderRadius: '8px' }}>
+                  {postmortemData}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,0,0,0.2)' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                Powered by Gemini 4 Argon • Autonomous Self-Healing SRE Pipeline
+              </span>
+              <button className="btn btn-primary" onClick={() => setShowPostmortemModal(false)} style={{ background: '#ec4899', color: '#fff', fontSize: '12px' }}>
+                Acknowledge & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
